@@ -1,10 +1,18 @@
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import "@appwrite.io/pink-icons";
-import App from './App.jsx'
+// main.jsx
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import RegisterForm from './RegisterForm.jsx'
+import AttendanceFrom from './AttendanceForm.jsx';
+import AdminDashboard from './AdminDashboard';
+import './App.css';
 
-createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-)
+ReactDOM.createRoot(document.getElementById('root')).render(
+    <BrowserRouter>
+        <Routes>
+            <Route path="/register" element={<RegisterForm />} />
+            <Route path="/attendanceForm" element={<AttendanceFrom />} />
+            <Route path="/admin" element={<AdminDashboard />} />
+        </Routes>
+    </BrowserRouter>
+);
