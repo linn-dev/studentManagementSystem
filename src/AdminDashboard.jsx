@@ -1,4 +1,4 @@
-// Updated AdminDashboard.jsx (separated sections for Zoom and Code)
+// Updated AdminDashboard.jsx
 import React, { useState, useEffect } from 'react';
 import { Client, Databases, Query, ID } from 'appwrite';
 import { format, subDays, isSameDay, parseISO } from 'date-fns';
@@ -38,6 +38,7 @@ function AdminDashboard() {
     const [loginError, setLoginError] = useState('');
     const [attendanceData, setAttendanceData] = useState([]);
     const [students, setStudents] = useState([]);
+    const [allCodeDates, setAllCodeDates] = useState([]); // New: Store all historical code dates
     const [loading, setLoading] = useState(true);
     const [activeTab, setActiveTab] = useState('current');
     const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
@@ -82,9 +83,34 @@ function AdminDashboard() {
         if (!isAuthenticated) return;
         fetchStudents();
         fetchAttendanceData();
+        fetchAllCodeDates(); // New: Fetch all historical codes
         fetchDefinedCode(selectedDate);
         fetchGlobalZoom(); // Separate fetch for global Zoom
-    }, [selectedDate, isAuthenticated]);
+    }, [isAuthenticated]);
+
+    // New: Fetch all code dates for long-term absentee calculation
+    const fetchAllCodeDates = async () => {
+        try {
+            const response = await databases.listDocuments(
+                DB3_ID,
+                CODE_COLLECTION_ID,
+                [Query.orderDesc('date')]
+            );
+            const codeDates = response.documents.map(doc => ({
+                date: doc.date,
+                code: doc.code,
+                dateObj: parseISO(doc.date)
+            }));
+            setAllCodeDates(codeDates);
+        } catch (err) {
+            console.error('Error fetching code dates:', err);
+        }
+    };
+
+    useEffect(() => {
+        if (!isAuthenticated || allCodeDates.length === 0) return;
+        fetchDefinedCode(selectedDate);
+    }, [selectedDate, allCodeDates]);
 
     const fetchStudents = async () => {
         try {
@@ -122,19 +148,11 @@ function AdminDashboard() {
     };
 
     const fetchDefinedCode = async (date) => {
-        try {
-            const response = await databases.listDocuments(
-                DB3_ID,
-                CODE_COLLECTION_ID,
-                [Query.equal('date', date)]
-            );
-            if (response.documents.length > 0) {
-                setDefinedCode(response.documents[0].code || '');
-            } else {
-                setDefinedCode('');
-            }
-        } catch (err) {
-            console.error('Error fetching code:', err);
+        const codeDate = allCodeDates.find(cd => cd.date === date);
+        if (codeDate) {
+            setDefinedCode(codeDate.code || '');
+        } else {
+            setDefinedCode('');
         }
     };
 
@@ -196,7 +214,8 @@ function AdminDashboard() {
                     { date: selectedDate, code: newCode }
                 );
             }
-            setDefinedCode(newCode);
+            // Refresh all code dates after save
+            await fetchAllCodeDates();
             setNewCode('');
             setCodeSuccess(true);
         } catch (err) {
@@ -269,6 +288,9 @@ function AdminDashboard() {
     };
 
     const getAttendanceStatus = (studentId, date, code) => {
+        if (!code) {
+            return { status: null, code: '-' }; // No code defined, neutral status
+        }
         const selectedDateObj = parseISO(date);
         const studentRecords = attendanceData.filter(
             record => record.studentId === studentId && isSameDay(record.createdAt, selectedDateObj)
@@ -278,7 +300,7 @@ function AdminDashboard() {
         }
         const latestRecord = studentRecords[0];
         return {
-            status: code && latestRecord.attendanceCode === code ? 'present' : 'absent-informed',
+            status: latestRecord.attendanceCode === code ? 'present' : 'absent-informed',
             code: latestRecord.attendanceCode
         };
     };
@@ -286,27 +308,37 @@ function AdminDashboard() {
     const getLongTermAbsentees = () => {
         const absentees = [];
         students.forEach((student) => {
-            let absentDays = 0;
-            let checkDate = new Date();
-            while (absentDays < 5) { // Fixed: < 5 to check up to 5 days
+            let absentClassDays = 0;
+            // Start from the most recent class day and go backwards through code-defined days
+            for (let i = 0; i < allCodeDates.length && absentClassDays < 5; i++) {
+                const classDay = allCodeDates[i].dateObj;
                 const records = attendanceData.filter(
-                    record => record.studentId === student.studentId && isSameDay(record.createdAt, checkDate)
+                    record => record.studentId === student.studentId && isSameDay(record.createdAt, classDay)
                 );
-                if (records.length === 0) absentDays++;
-                else break;
-                checkDate = subDays(checkDate, 1);
+                if (records.length === 0) {
+                    absentClassDays++;
+                } else {
+                    break; // Stop on first attendance found
+                }
             }
-            if (absentDays > 4) { // Fixed: > 4 for long-term (5+ days)
+            if (absentClassDays > 4) {
                 const lastAtt = attendanceData
                     .filter(record => record.studentId === student.studentId)
                     .sort((a, b) => b.createdAt - a.createdAt)[0]?.createdAt;
-                absentees.push({ ...student, absentDays, lastAttendance: lastAtt });
+                absentees.push({ ...student, absentClassDays, lastAttendance: lastAtt });
             }
         });
         return absentees;
     };
 
     const renderCurrentAttendanceTable = () => {
+        if (!definedCode) {
+            return (
+                <div className="text-center py-8">
+                    <p className="text-gray-500 text-lg">No attendance code defined for {selectedDate}. Please set a code to view attendance status.</p>
+                </div>
+            );
+        }
         return (
             <div className="overflow-x-auto">
                 <table className="min-w-full bg-white rounded-lg shadow-md">
@@ -322,6 +354,7 @@ function AdminDashboard() {
                     <tbody className="divide-y divide-gray-200">
                     {students.map((student) => {
                         const { status, code } = getAttendanceStatus(student.studentId, selectedDate, definedCode);
+                        if (status === null) return null; // Skip if no code defined (handled above)
                         const statusStyles = {
                             'present': 'bg-green-100 text-green-800',
                             'absent-informed': 'bg-orange-100 text-orange-800',
@@ -365,7 +398,7 @@ function AdminDashboard() {
                         <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Student ID</th>
                         <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Name</th>
                         <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Telegram</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Consecutive Absent Days</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Consecutive Absent Class Days</th>
                         <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Last Attendance</th>
                     </tr>
                     </thead>
@@ -375,7 +408,7 @@ function AdminDashboard() {
                             <td className="px-6 py-4 whitespace-nowrap font-medium text-[#D16F55]">{student.studentId}</td>
                             <td className="px-6 py-4 whitespace-nowrap">{student.studentName}</td>
                             <td className="px-6 py-4 whitespace-nowrap">{student.telegramUsername || '-'}</td>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-[#D16F55]">{student.absentDays} days</td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-[#D16F55]">{student.absentClassDays} days</td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                 {student.lastAttendance ? format(student.lastAttendance, 'MMM dd, yyyy') : 'Never'}
                             </td>
@@ -384,7 +417,7 @@ function AdminDashboard() {
                     </tbody>
                 </table>
                 {absentees.length === 0 && (
-                    <p className="text-center py-8 text-gray-500">No students absent for more than 4 days.</p>
+                    <p className="text-center py-8 text-gray-500">No students absent for more than 4 class days.</p>
                 )}
             </div>
         );
@@ -570,7 +603,7 @@ function AdminDashboard() {
                                     : 'text-[#A8B5A2] hover:text-[#D16F55]'
                             }`}
                         >
-                            Long-term Absent (Over 4 days)
+                            Long-term Absent (Over 4 class days)
                         </button>
                     </nav>
                 </div>
