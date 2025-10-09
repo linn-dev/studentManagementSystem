@@ -15,6 +15,7 @@
     "appwrite": "^17.0.2",
     "date-fns": "^4.1.0",
     "html2canvas-pro": "^1.5.11",
+    "lodash": "^4.17.21",
     "papaparse": "^5.5.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
