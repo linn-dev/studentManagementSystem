@@ -64,30 +64,35 @@ function RegisterForm() {
         }
     };
 
-    const generateStudentId = async () => {
+    const getNextStudentId = async () => {
         try {
             const response = await databases.listDocuments(
                 DB4_ID,
                 REGISTRATIONS_COLLECTION_ID,
-                [Query.orderDesc('studentId'), Query.limit(100)]
+                [Query.orderDesc('studentId'), Query.limit(1)]
             );
             let nextNumber = 2001; // Start from WDF2001
             if (response.documents.length > 0) {
                 const lastId = response.documents[0].studentId;
                 const lastNumber = parseInt(lastId.replace('WDF', ''));
-                if (lastNumber >= 2999) {
-                    setError('Registration is currently full. Contact your class teacher or moderator.');
-                    setGeneratedId('');
-                    return;
-                }
+                if (lastNumber >= 2999) return null; // Registration full
                 nextNumber = lastNumber + 1;
             }
-            setGeneratedId(`WDF${nextNumber}`);
-            setError('');
+            return `WDF${nextNumber}`;
         } catch (err) {
-            setError('Failed to generate student ID. Please refresh the page.');
+            console.error('Error fetching next ID:', err.message);
+            return null;
+        }
+    };
+
+    const generateStudentId = async () => {
+        const nextId = await getNextStudentId();
+        if (!nextId) {
+            setError('Registration is currently full. Contact your class teacher or moderator.');
             setGeneratedId('');
-            console.error('Error:', err.message);
+        } else {
+            setGeneratedId(nextId);
+            setError('');
         }
     };
 
@@ -165,18 +170,27 @@ function RegisterForm() {
                 return;
             }
 
-            // Attempt to create with retry for ID conflicts
+            // Attempt to create with JIT generation and retry for ID conflicts
             const maxRetries = 5;
             let retries = 0;
+            let finalId = '';
 
             while (retries < maxRetries) {
+                // Generate the ID RIGHT BEFORE saving to prevent race conditions
+                finalId = await getNextStudentId();
+                if (!finalId) {
+                    setError('Registration is currently full. Contact your class teacher or moderator.');
+                    setSubmitting(false);
+                    return;
+                }
+
                 try {
                     await databases.createDocument(
                         DB4_ID,
                         REGISTRATIONS_COLLECTION_ID,
-                        ID.unique(),
+                        finalId, // USE THE EXACT STUDENT ID AS THE DOCUMENT ID
                         {
-                            studentId: generatedId,
+                            studentId: finalId,
                             fullName: fullName.trim(),
                             email: email.trim().toLowerCase(),
                             telegramUsername: telegramUsername.trim(),
@@ -187,7 +201,7 @@ function RegisterForm() {
                     );
 
                     setRegisteredData({
-                        id: generatedId,
+                        id: finalId,
                         name: fullName.trim(),
                         email: email.trim().toLowerCase(),
                         zoomId: zoomId || 'Not set',
@@ -204,17 +218,12 @@ function RegisterForm() {
                     setCurrentStep(1);
                     await generateStudentId();
                     setSubmitting(false);
-                    return;
+                    return; // Success, exit the loop!
                 } catch (err) {
-                    if (err.code === 409) {
+                    if (err.code === 409) { // 409 Conflict: Document ID already exists
                         retries++;
-                        console.warn(`Retry ${retries}/${maxRetries}: Duplicate ID ${generatedId}. Regenerating...`);
-                        await generateStudentId();
-                        if (!generatedId) {
-                            setError('Failed to generate Student ID after retries. Please try again later.');
-                            setSubmitting(false);
-                            return;
-                        }
+                        console.warn(`Retry ${retries}/${maxRetries}: ID ${finalId} was taken. Regenerating...`);
+                        // The loop will automatically try again and fetch the NEXT available ID
                     } else {
                         throw err;
                     }
