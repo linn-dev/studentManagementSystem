@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Client, Databases, Account, Query, ID } from 'appwrite';
 import { format, parseISO, startOfDay, endOfDay } from 'date-fns';
 import Papa from 'papaparse';
@@ -93,7 +93,7 @@ function AdminDashboard() {
         }
     };
 
-    const fetchWithRetry = async (fn, retries = 3, delay = 1000) => {
+    const fetchWithRetry = async (fn, retries = 3, delay = 300) => {
         for (let i = 0; i < retries; i++) {
             try { return await fn(); }
             catch (err) {
@@ -108,7 +108,7 @@ function AdminDashboard() {
         try {
             let allStudents = [];
             let offset = 0;
-            const limit = 100;
+            const limit = 5000;
             let hasMore = true;
             while (hasMore) {
                 const response = await fetchWithRetry(() =>
@@ -133,7 +133,7 @@ function AdminDashboard() {
             const end = endOfDay(parseISO(date));
             let allAttendance = [];
             let offset = 0;
-            const limit = 100;
+            const limit = 5000;
             let hasMore = true;
             while (hasMore) {
                 const response = await fetchWithRetry(() =>
@@ -160,7 +160,7 @@ function AdminDashboard() {
         try {
             let allCodes = [];
             let offset = 0;
-            const limit = 100;
+            const limit = 5000;
             let hasMore = true;
             while (hasMore) {
                 const response = await fetchWithRetry(() =>
@@ -207,10 +207,14 @@ function AdminDashboard() {
     useEffect(() => {
         if (!isAuthenticated) return;
         const codeForDate = allCodeDates.find(cd => cd.date === selectedDate);
-        setDefinedCode(codeForDate ? codeForDate.code || '' : '');
+        const newCode = codeForDate ? codeForDate.code || '' : '';
+        // Only update if the code actually changed to avoid unnecessary re-renders
+        if (newCode !== definedCode) {
+            setDefinedCode(newCode);
+        }
         fetchAttendanceData(selectedDate);
         setCurrentPage(1);
-    }, [selectedDate, allCodeDates]);
+    }, [selectedDate]); // Removed allCodeDates dependency -- it was causing double-fetches on initial load
 
     // Admin Settings Handlers
     const handleCodeSubmit = async (e) => {
@@ -310,19 +314,32 @@ function AdminDashboard() {
         document.body.removeChild(link);
     };
 
-    // Status Calculations
+    // Status Calculations -- cached with useMemo for performance
+    // Pre-build an attendance lookup Map so each status check is O(1) instead of O(n)
+    const attendanceMap = useMemo(() => {
+        const map = new Map();
+        for (const record of attendanceData) {
+            const existing = map.get(record.studentId);
+            // Keep only the latest record per student (by createdAt)
+            if (!existing || record.createdAt > existing.createdAt) {
+                map.set(record.studentId, record);
+            }
+        }
+        return map;
+    }, [attendanceData]);
+
     const getAttendanceStatus = (studentId) => {
         if (!definedCode) return { status: 'no-code', code: '-', label: 'No Code Set' };
-        const studentRecords = attendanceData.filter(record => record.studentId === studentId);
-        if (studentRecords.length === 0) return { status: 'absent-no-inform', code: '-', label: 'Absent (No Info)' };
-        const latestRecord = studentRecords.sort((a, b) => b.createdAt - a.createdAt)[0];
+        const latestRecord = attendanceMap.get(studentId);
+        if (!latestRecord) return { status: 'absent-no-inform', code: '-', label: 'Absent (No Info)' };
         const submittedCode = latestRecord.attendanceCode;
         if (submittedCode === definedCode) return { status: 'present', code: submittedCode, label: 'Present' };
         if (submittedCode === 'EXCUSED') return { status: 'absent-informed', code: 'EXCUSED', label: 'Excused (Admin)' };
         return { status: 'absent-informed', code: submittedCode, label: 'Absent (Informed)' };
     };
 
-    const getFilteredStudents = () => {
+    // Cache filtered students so it only recalculates when data actually changes
+    const filteredStudents = useMemo(() => {
         let filtered = students.map(student => ({ ...student, ...getAttendanceStatus(student.studentId) }));
         if (statusFilter !== 'all') filtered = filtered.filter(s => s.status === statusFilter);
         if (searchQuery.trim()) {
@@ -332,9 +349,7 @@ function AdminDashboard() {
             );
         }
         return filtered;
-    };
-
-    const filteredStudents = getFilteredStudents();
+    }, [students, attendanceMap, definedCode, statusFilter, searchQuery]);
     const totalPages = Math.ceil(filteredStudents.length / itemsPerPage);
     const paginatedStudents = filteredStudents.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 

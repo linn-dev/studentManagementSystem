@@ -57,18 +57,19 @@ function AttendanceForm() {
         setSubmitting(true);
 
         try {
-            // 1. Validate studentId exists in registration database
-            const studentResponse = await databases.listDocuments(
-                DB4_ID,
-                REGISTRATIONS_COLLECTION_ID,
-                [Query.equal('studentId', studentId)]
-            );
-            if (studentResponse.documents.length === 0) {
+            // 1. Validate studentId exists using direct document lookup (much faster than listDocuments query)
+            let student;
+            try {
+                student = await databases.getDocument(
+                    DB4_ID,
+                    REGISTRATIONS_COLLECTION_ID,
+                    studentId // Direct ID lookup -- O(1) instead of querying the whole collection
+                );
+            } catch (lookupErr) {
                 setError('Invalid Student ID. Please register first.');
                 setSubmitting(false);
                 return;
             }
-            const student = studentResponse.documents[0];
 
             // 2. Generate predictable document ID for today (Option B - Overwrite logic)
             // Get today's date in local YYYY-MM-DD format
